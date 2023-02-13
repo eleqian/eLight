@@ -2,8 +2,6 @@
 #include "hal.h"
 
 #define TIMER_INIT_TICK (65536UL - (SYS_CLK_HZ / TASK_HZ / 12))
-#define PCON_IDL 0x01
-#define PCON_PD 0x02
 #define WDT_TIME 0 /* ~197ms@4M */
 #define CHIP_VREF (*(u16 code *)0x1ff7) /* in mv */
 
@@ -89,7 +87,7 @@ void hal_init(void)
 {
     g_tick = 0;
 
-    P_SW2 |= 0x80; /* 使能房屋XFR */
+    P_SW2 |= 0x80; /* 使能访问XFR */
     hal_gpio_init();
     hal_time_base_init();
     hal_pwm_init();
@@ -176,14 +174,14 @@ u16 hal_get_vcc(void)
 
 void hal_enter_idle(void)
 {
-    PCON = PCON_IDL; // MCU进入IDLE模式
+    PCON = 0x01; // MCU进入IDLE模式
 }
 
 void hal_enter_low_power(void)
 {
     hal_adc_en(FALSE);
     EX0 = 1; // 使能INT0中断
-    PCON = PCON_PD; // MCU进入掉电模式
+    PCON = 0x02; // MCU进入掉电模式
     _nop_();
     _nop_();
     _nop_();

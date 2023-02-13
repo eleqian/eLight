@@ -2,17 +2,19 @@
 #include "key.h"
 #include "light.h"
 
-#define LIGHT_VREF 10 /* 100mV */
 #define LIGHT_DIM_DIV 24 /* PWM->10k/1uf-220k-FB-10k<-Rsense */
 #define LIGHT_DUTY_MAX 256
+
+/* unit: 10mv */
+#define LIGHT_VREF 10 /* 100mV */
 #define LIGHT_VCC_FULL 420 /* 4.2v */
 #define LIGHT_VCC_LOW 330 /* 3.3v */
 #define LIGHT_VCC_EMPTY 290 /* 2.9v */
 #define LIGHT_VCC_TH 10 /* 0.1v */
 
+/* unit: 10ms */
 #define LIGHT_T_TASK TASK_MS2TICK(10)
 #define LIGHT_MS2CNT(t) ((t) / 10)
-
 #define LIGHT_TRACK_VCC_CNT LIGHT_MS2CNT(500)
 #define LIGHT_LOW_POWER_CNT LIGHT_MS2CNT(2000)
 #define LIGHT_SHOW_POWER_CNT LIGHT_MS2CNT(1500)
@@ -34,6 +36,7 @@ typedef enum {
     POWER_MAX
 } power_level_e;
 
+/* unit: 10mv */
 static u16 ROM light_bat_cap[] = {368, 374, 377, 379, 382, 387, 392, 398, 406, 420};
 #define LIGHT_BAT_CAP_CNT (ARRAY_SIZE(light_bat_cap))
 
