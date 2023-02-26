@@ -1,5 +1,6 @@
 #include "hal.h"
 #include "key.h"
+#include "ntc.h"
 #include "light.h"
 
 #define LIGHT_DIM_DIV 24 /* PWM->10k/1uf-220k-FB-10k<-Rsense */
@@ -18,6 +19,9 @@
 #define LIGHT_TRACK_VCC_CNT LIGHT_MS2CNT(500)
 #define LIGHT_LOW_POWER_CNT LIGHT_MS2CNT(2000)
 #define LIGHT_SHOW_POWER_CNT LIGHT_MS2CNT(1500)
+#define LIGHT_TEMP_CHECK_CNT LIGHT_MS2CNT(1000)
+
+#define LIGHT_TEMP_HIGH 50
 
 typedef enum {
     LIGHT_OFF,
@@ -68,7 +72,12 @@ typedef struct {
     led_e led;
     BOOL level_is_inc;
     u8 focus_level;
+#if CONFIG_LED_WIDE_EN
     u8 wide_level;
+#endif
+#if CONFIG_NTC_EN
+    u8 temp_cnt;
+#endif
     u8 flash_freq;
     u8 sos_freq;
     u8 track_vcc_cnt;
@@ -136,7 +145,11 @@ static void light_apply_level(u8 level)
 
 static u8 light_get_level(void)
 {
+#if CONFIG_LED_WIDE_EN
     return (light.led == LED_FOCUS) ? light.focus_level : light.wide_level;
+#else
+    return light.focus_level;
+#endif
 }
 
 static void light_set_level(u8 level)
@@ -147,10 +160,12 @@ static void light_set_level(u8 level)
             light_apply_level(level);
         }
     } else {
+#if CONFIG_LED_WIDE_EN
         if (light.wide_level != level) {
             light.wide_level = level;
             light_apply_level(level);
         }
+#endif
     }
 }
 
@@ -241,7 +256,7 @@ static void light_set_mode(light_mode_e mode)
             light_set_pattern(light_sos_pattern, LIGHT_SOS_PATTERN_CNT, light_sos_scale[light.sos_freq]);
             break;
         case LIGHT_BAT:
-            light.led = LED_WIDE;
+            light.led = LED_INDICATE;
             light.wait_time = light_vbat_time();
             light_apply_level(0);
             hal_led_en(light.led);
@@ -291,7 +306,7 @@ static void light_lock_proc(key_event_e key)
     switch (key) {
         case KEY_EVENT_PRESS:
             light.wait_time = LIGHT_LOW_POWER_CNT;
-            hal_led_en(LED_WIDE);
+            hal_led_en(LED_INDICATE);
             break;
         case KEY_EVENT_SHORT_4:
             light_set_mode(LIGHT_OFF);
@@ -315,9 +330,14 @@ static void light_on_proc(key_event_e key)
             light_set_mode(LIGHT_OFF);
             return;
         case KEY_EVENT_SHORT_2:
+#if CONFIG_LED_WIDE_EN
             light.led = LED_WIDE;
             light_apply_level(light.wide_level);
             light_set_mode(LIGHT_ON);
+#else
+            light.level_is_inc = TRUE;
+            light_set_level(LIGHT_LEVEL_MAX);
+#endif
             break;
         case KEY_EVENT_SHORT_3:
             light_set_mode(LIGHT_FLASH);
@@ -433,6 +453,33 @@ static void light_mode_proc(void)
     }
 }
 
+static void light_temp_protect(void)
+{
+#if CONFIG_NTC_EN
+    u8 temp;
+
+    if (light.mode != LIGHT_ON) {
+        light.temp_cnt = 0;
+        return;
+    }
+
+    if (light.temp_cnt > 0) {
+        light.temp_cnt--;
+        return;
+    }
+
+    light.temp_cnt = LIGHT_TEMP_CHECK_CNT;
+    temp = ntc_get_temp();
+    if (temp > LIGHT_TEMP_HIGH) {
+        u8 level = light_get_level();
+        if (level > LIGHT_LEVEL_MAX / 2) {
+            level--;
+            light_set_level(level);
+        }
+    }
+#endif
+}
+
 static void light_track_vcc(void)
 {
     if (light.mode == LIGHT_OFF || light.mode == LIGHT_LOCK) {
@@ -456,6 +503,7 @@ void light_task(void)
     TASK_SET_DELAY(light_tick, LIGHT_T_TASK);
 
     light_track_vcc();
+    light_temp_protect();
     light_mode_proc();
     light_pattern_update();
 }

@@ -1,3 +1,4 @@
+#include "stc8g.h"
 #include "base.h"
 #include "hal.h"
 
@@ -5,9 +6,16 @@
 #define WDT_TIME 0 /* ~197ms@4M */
 #define CHIP_VREF (*(u16 code *)0x1ff7) /* in mv */
 
+#if CONFIG_BOARD_867A
 #define PIN_LED_FOCUS P54
 #define PIN_LED_WIDE P55
 #define PIN_DRV_EN P31
+#elif CONFIG_BOARD_SD1006
+#define PIN_DRV_EN P55
+#else
+#error Unsupported hardware!
+#endif
+
 #define PIN_KEY P32
 
 volatile tick_t g_tick;
@@ -35,7 +43,8 @@ void delay_ms(u8 ms)
 
 static void hal_gpio_init(void)
 {
-    /* P3.0: ADC IN; P3.1: OUT; P3.2: Bi-IN; P3.3: OUT */
+#if CONFIG_BOARD_867A
+    /* P3.0: ADC IN; P3.1: OUT; P3.2: Bi-IO; P3.3: OUT */
     P3IE = 0xfe;
     P3M0 = 0x0a;
     P3M1 = 0x01;
@@ -43,9 +52,21 @@ static void hal_gpio_init(void)
     /* P5.4: OUT; P5.5: OUT */
     P5M0 = 0x30;
     P5M1 = 0x00;
+#elif CONFIG_BOARD_SD1006
+    /* P3.0~2: Bi-IO; P3.3: OUT */
+    P3M0 = 0x08;
+    P3M1 = 0x00;
 
+    /* P5.4: ADC IN; P5.5: OUT */
+    P5IE = 0xef;
+    P5M0 = 0x20;
+    P5M1 = 0x10;
+#endif
+
+#if CONFIG_LED_WIDE_EN
     PIN_LED_FOCUS = 0;
     PIN_LED_WIDE = 0;
+#endif
     PIN_DRV_EN = 0;
 }
 
@@ -111,19 +132,25 @@ void hal_led_en(led_e led)
 {
     switch (led) {
         case LED_FOCUS:
+#if CONFIG_LED_WIDE_EN
             PIN_LED_FOCUS = 1;
             PIN_LED_WIDE = 0;
+#endif
             PIN_DRV_EN = 1;
             break;
+#if CONFIG_LED_WIDE_EN
         case LED_WIDE:
             PIN_LED_WIDE = 1;
             PIN_LED_FOCUS = 0;
             PIN_DRV_EN = 1;
             break;
+#endif
         default:
             PIN_DRV_EN = 0;
+#if CONFIG_LED_WIDE_EN
             PIN_LED_FOCUS = 0;
             PIN_LED_WIDE = 0;
+#endif
             break;
     }
 }
@@ -180,6 +207,10 @@ void hal_enter_idle(void)
 void hal_enter_low_power(void)
 {
     hal_adc_en(FALSE);
+    /* pwm固定输出低，避免外部电流功耗 */
+    CCAP1H = 0xff;
+    CCAP1L = 0xff;
+    PCA_PWM1 = 0x03;
     EX0 = 1; // 使能INT0中断
     PCON = 0x02; // MCU进入掉电模式
     _nop_();
@@ -187,6 +218,10 @@ void hal_enter_low_power(void)
     _nop_();
     _nop_();
     EX0 = 0; // 关闭INT0中断
+    /* pwm固定输出高，最低亮度 */
+    CCAP1H = 0x0;
+    CCAP1L = 0x0;
+    PCA_PWM1 = 0x00;
     hal_adc_en(TRUE);
     delay_ms(1);
 }

@@ -401,6 +401,11 @@
               <FileType>1</FileType>
               <FilePath>..\src\main.c</FilePath>
             </File>
+            <File>
+              <FileName>ntc.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\src\ntc.c</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>

@@ -1,14 +1,9 @@
 #ifndef __HAL_H__
 #define __HAL_H__
 
-#include "stc8g.h"
 #include <intrins.h>
 #include "base.h"
-
-/* 主时钟频率 */
-#define SYS_CLK_HZ 4000000UL
-/* 任务执行频率 */
-#define TASK_HZ 100
+#include "config.h"
 
 extern volatile tick_t g_tick;
 
@@ -19,12 +14,23 @@ extern volatile tick_t g_tick;
 typedef enum {
     LED_NONE,
     LED_FOCUS,
+#if CONFIG_LED_WIDE_EN
     LED_WIDE,
+    LED_INDICATE = LED_WIDE,
+#else
+    LED_INDICATE = LED_FOCUS,
+#endif
+
     LED_MAX
 } led_e;
 
 typedef enum {
+#if CONFIG_BOARD_867A
     ADC_VLED = 0,
+#endif
+#if CONFIG_NTC_EN
+    ADC_NTC = 4,
+#endif
     ADC_VCC = 15,
     ADC_MAX
 } adc_ch_e;
