@@ -206,6 +206,11 @@ void hal_enter_idle(void)
 
 void hal_enter_low_power(void)
 {
+    /* 按键按下时不能进入低功耗模式 */
+    if (hal_key_pressed()) {
+        return;
+    }
+
     hal_adc_en(FALSE);
     /* pwm固定输出低，避免外部电流功耗 */
     CCAP1H = 0xff;

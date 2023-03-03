@@ -21,8 +21,6 @@
 #define LIGHT_SHOW_POWER_CNT LIGHT_MS2CNT(1500)
 #define LIGHT_TEMP_CHECK_CNT LIGHT_MS2CNT(1000)
 
-#define LIGHT_TEMP_HIGH 50
-
 typedef enum {
     LIGHT_OFF,
     LIGHT_LOCK,
@@ -40,17 +38,20 @@ typedef enum {
     POWER_MAX
 } power_level_e;
 
-/* unit: 10mv */
+/* 10%~100%电量对应电压，unit: 10mv */
 static u16 ROM light_bat_cap[] = {368, 374, 377, 379, 382, 387, 392, 398, 406, 420};
 #define LIGHT_BAT_CAP_CNT (ARRAY_SIZE(light_bat_cap))
 
-/* Rsense=0.25, Imax=350mA */
+/* 10%~100%驱动电流 */
 static u8 ROM light_level_gamma[] = {
     25, 27, 29, 31, 33, 36, 38, 41, 44, 47, 51, 54, 58, 63, 67, 72, 78,
-    83, 89, 96, 103, 110, 119, 127, 137, 147, 157, 169, 181, 194, 209, 224
+    83, 89, 96, 103, 110, 119, 127, 137, 147, 157, 169, 181, 194, 209, 224,
+    251
 };
-#define LIGHT_LEVEL_CNT (ARRAY_SIZE(light_level_gamma))
-#define LIGHT_LEVEL_MAX (LIGHT_LEVEL_CNT - 1)
+
+#define LIGHT_LEVEL_MIN 0
+
+/* 各种pattern下标偶数(0/2/4...)为开，奇数(1/3/5...)为关 */
 
 static u8 ROM light_flash_pattern[] = {1, 1};
 #define LIGHT_FLASH_PATTERN_CNT (ARRAY_SIZE(light_flash_pattern))
@@ -141,6 +142,15 @@ static void light_apply_level(u8 level)
     hal_pwm_set_duty(duty);
     light_update_power_level(vcc);
     light.cur_level = level;
+}
+
+static u8 light_get_level_max(void)
+{
+#if CONFIG_LED_WIDE_EN
+    return (light.led == LED_FOCUS) ? CONFIG_FOCUS_LV_MAX : CONFIG_WIDE_LV_MAX;
+#else
+    return CONFIG_FOCUS_LV_MAX;
+#endif
 }
 
 static u8 light_get_level(void)
@@ -248,22 +258,22 @@ static void light_set_mode(light_mode_e mode)
             hal_led_en(light.led);
             break;
         case LIGHT_FLASH:
-            light_apply_level(LIGHT_LEVEL_MAX);
+            light_apply_level(light_get_level_max());
             light_set_pattern(light_flash_pattern, LIGHT_FLASH_PATTERN_CNT, light_flash_scale[light.flash_freq]);
             break;
         case LIGHT_SOS:
-            light_apply_level(LIGHT_LEVEL_MAX);
+            light_apply_level(light_get_level_max());
             light_set_pattern(light_sos_pattern, LIGHT_SOS_PATTERN_CNT, light_sos_scale[light.sos_freq]);
             break;
         case LIGHT_BAT:
             light.led = LED_INDICATE;
             light.wait_time = light_vbat_time();
-            light_apply_level(0);
+            light_apply_level(LIGHT_LEVEL_MIN);
             hal_led_en(light.led);
             break;
         case LIGHT_LOCK:
             light.wait_time = LIGHT_LOW_POWER_CNT;
-            light_set_level(0);
+            light_apply_level(LIGHT_LEVEL_MIN);
             hal_led_en(LED_NONE);
             break;
         default:
@@ -281,7 +291,7 @@ static void light_off_proc(key_event_e key)
             return;
         case KEY_EVENT_SHORT_2:
             light.level_is_inc = TRUE;
-            light_set_level(LIGHT_LEVEL_MAX);
+            light_set_level(light_get_level_max());
             light_set_mode(LIGHT_ON);
             return;
         case KEY_EVENT_LONG:
@@ -336,20 +346,30 @@ static void light_on_proc(key_event_e key)
             light_set_mode(LIGHT_ON);
 #else
             light.level_is_inc = TRUE;
-            light_set_level(LIGHT_LEVEL_MAX);
+            light_set_level(light_get_level_max());
 #endif
             break;
         case KEY_EVENT_SHORT_3:
             light_set_mode(LIGHT_FLASH);
             return;
-        case KEY_EVENT_LONG:
-            light.level_is_inc = !light.level_is_inc;
+        case KEY_EVENT_LONG: {
+            /* 每次长按或者达到边界时切换亮度调整方向 */
+            u8 level = light_get_level();
+            if (level == light_get_level_max()) {
+                light.level_is_inc = 0;
+            } else if (level == LIGHT_LEVEL_MIN) {
+                light.level_is_inc = 1;
+            } else {
+                light.level_is_inc = !light.level_is_inc;
+            }
+            /* fall-through */
+        }
         case KEY_EVENT_LONG_REPEAT: {
             u8 level = light_get_level();
             if (light.level_is_inc) {
-                level = (level < LIGHT_LEVEL_MAX) ? level + 1 : level;
+                level = (level < light_get_level_max()) ? level + 1 : level;
             } else {
-                level = (level > 0) ? level - 1 : level;
+                level = (level > LIGHT_LEVEL_MIN) ? level - 1 : level;
             }
             light_set_level(level);
             break;
@@ -400,7 +420,7 @@ static void light_sos_proc(key_event_e key)
             return;
         case KEY_EVENT_SHORT_2:
             light.level_is_inc = TRUE;
-            light_set_level(LIGHT_LEVEL_MAX);
+            light_set_level(light_get_level_max());
             light_set_mode(LIGHT_ON);
             return;
         case KEY_EVENT_LONG:
@@ -470,9 +490,9 @@ static void light_temp_protect(void)
 
     light.temp_cnt = LIGHT_TEMP_CHECK_CNT;
     temp = ntc_get_temp();
-    if (temp > LIGHT_TEMP_HIGH) {
+    if (temp > CONFIG_TEMP_HIGH) {
         u8 level = light_get_level();
-        if (level > LIGHT_LEVEL_MAX / 2) {
+        if (level > light_get_level_max() / 2) {
             level--;
             light_set_level(level);
         }
