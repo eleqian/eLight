@@ -65,6 +65,10 @@ u8 ntc_get_temp(void)
 {
     u16 adc_val = ntc_adc_conv();
 
+#if CONFIG_NTC_EN == NTC_TO_GND
+    adc_val = (1u << CONFIG_ADC_RES) - adc_val;
+#endif
+
     return ntc_search_table(adc_val);
 }
 

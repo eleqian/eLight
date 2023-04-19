@@ -3,20 +3,19 @@
 #include "ntc.h"
 #include "light.h"
 
-#define LIGHT_DIM_DIV 24 /* PWM->10k/1uf-220k-FB-10k<-Rsense */
-#define LIGHT_DUTY_MAX 256
-
 /* unit: 10mv */
-#define LIGHT_VREF 10 /* 100mV */
-#define LIGHT_VCC_FULL 420 /* 4.2v */
-#define LIGHT_VCC_LOW 330 /* 3.3v */
-#define LIGHT_VCC_EMPTY 290 /* 2.9v */
-#define LIGHT_VCC_TH 10 /* 0.1v */
+#define LIGHT_VCC_FULL 420U /* 4.2v */
+#define LIGHT_VCC_LOW 330U /* 3.3v */
+#define LIGHT_VCC_EMPTY 290U /* 2.9v */
+#define LIGHT_VCC_LV_TH 10 /* 0.1v */
+#define LIGHT_VCC_FILTER_TH 2 /* 20mv */
+
+#define LIGHT_VCC_FILTER_S 3
 
 /* unit: 10ms */
 #define LIGHT_T_TASK TASK_MS2TICK(10)
 #define LIGHT_MS2CNT(t) ((t) / 10)
-#define LIGHT_TRACK_VCC_CNT LIGHT_MS2CNT(500)
+#define LIGHT_TRACK_VCC_CNT LIGHT_MS2CNT(200)
 #define LIGHT_LOW_POWER_CNT LIGHT_MS2CNT(2000)
 #define LIGHT_SHOW_POWER_CNT LIGHT_MS2CNT(1500)
 #define LIGHT_TEMP_CHECK_CNT LIGHT_MS2CNT(1000)
@@ -42,17 +41,25 @@ typedef enum {
 static u16 ROM light_bat_cap[] = {368, 374, 377, 379, 382, 387, 392, 398, 406, 420};
 #define LIGHT_BAT_CAP_CNT (ARRAY_SIZE(light_bat_cap))
 
+#ifdef CONFIG_DIM_HIGH_RES
+/* 2%~100%驱动电流 */
+static light_duty_t ROM light_level_gamma[] = {
+    20, 23, 26, 29, 33, 37, 42, 47, 53, 60, 68, 77, 87, 99, 112, 126,
+    143, 162, 183, 207, 234, 265, 299, 338, 383, 433, 489, 553, 626, 707, 800, 905,
+    1023
+};
+#else
 /* 10%~100%驱动电流 */
-static u8 ROM light_level_gamma[] = {
+static light_duty_t ROM light_level_gamma[] = {
     25, 27, 29, 31, 33, 36, 38, 41, 44, 47, 51, 54, 58, 63, 67, 72, 78,
     83, 89, 96, 103, 110, 119, 127, 137, 147, 157, 169, 181, 194, 209, 224,
-    251
+    240
 };
+#endif
 
 #define LIGHT_LEVEL_MIN 0
 
-/* 各种pattern下标偶数(0/2/4...)为开，奇数(1/3/5...)为关 */
-
+/* 各种pattern定义，下标偶数(0/2/4...)为开，奇数(1/3/5...)为关 */
 static u8 ROM light_flash_pattern[] = {1, 1};
 #define LIGHT_FLASH_PATTERN_CNT (ARRAY_SIZE(light_flash_pattern))
 static u8 ROM light_flash_scale[] = {LIGHT_MS2CNT(60), LIGHT_MS2CNT(250)};
@@ -73,7 +80,7 @@ typedef struct {
     led_e led;
     BOOL level_is_inc;
     u8 focus_level;
-#if CONFIG_LED_WIDE_EN
+#if (CONFIG_LED_EN & CONFIG_LED_WIDE)
     u8 wide_level;
 #endif
 #if CONFIG_NTC_EN
@@ -82,6 +89,8 @@ typedef struct {
     u8 flash_freq;
     u8 sos_freq;
     u8 track_vcc_cnt;
+    u16 vcc_filter;
+    u16 vcc_s;
     u8 cur_level;
     u8 pattern_index;
     u8 pattern_num;
@@ -97,6 +106,8 @@ void light_init(void)
 {
     memset(&light, 0, sizeof(light));
     TASK_SET_DELAY(light_tick, 0);
+    light.vcc_filter = LIGHT_VCC_LOW;
+    light.vcc_s = LIGHT_VCC_LOW << LIGHT_VCC_FILTER_S;
 }
 
 static void light_update_power_level(u16 vcc)
@@ -112,14 +123,14 @@ static void light_update_power_level(u16 vcc)
         case POWER_LOW:
             if (vcc < LIGHT_VCC_EMPTY) {
                 light.power_level = POWER_EMPTY;
-            } else if (vcc > LIGHT_VCC_LOW + LIGHT_VCC_TH) {
+            } else if (vcc > LIGHT_VCC_LOW + LIGHT_VCC_LV_TH) {
                 light.power_level = POWER_NORMAL;
             }
             break;
         case POWER_EMPTY:
-            if (vcc > LIGHT_VCC_LOW + LIGHT_VCC_TH) {
+            if (vcc > LIGHT_VCC_LOW + LIGHT_VCC_LV_TH) {
                 light.power_level = POWER_NORMAL;
-            } else if (vcc > LIGHT_VCC_EMPTY + LIGHT_VCC_TH) {
+            } else if (vcc > LIGHT_VCC_EMPTY + LIGHT_VCC_LV_TH) {
                 light.power_level = POWER_LOW;
             }
             break;
@@ -128,34 +139,86 @@ static void light_update_power_level(u16 vcc)
     }
 }
 
-static u8 light_level2duty(u16 vcc, u8 level)
+static light_duty_t light_level2duty(u16 vcc, u8 level)
 {
-    u8 duty = (LIGHT_VREF * LIGHT_DIM_DIV * LIGHT_DUTY_MAX - LIGHT_VREF * (LIGHT_DIM_DIV - 1) * level) / vcc;
+    light_duty_t duty_org = light_level_gamma[level];
+    light_duty_t duty = (LIGHT_VFB * LIGHT_DIM_DIV * LIGHT_DUTY_MAX -
+        LIGHT_VFB * (LIGHT_DIM_DIV - 1) * duty_org + vcc / 2) / vcc;
+
+    if (duty > LIGHT_DUTY_MAX - 1) {
+        duty = LIGHT_DUTY_MAX - 1;
+    }
 
     return duty;
+}
+
+static u16 light_vcc_filter(u16 vcc)
+{
+    u16 vs;
+    u16 vd;
+
+    /* 滑动平均滤波，抑制大电流时内阻压降导致的闪烁 */
+    light.vcc_s += vcc - (light.vcc_s >> LIGHT_VCC_FILTER_S);
+    vs = light.vcc_s >> LIGHT_VCC_FILTER_S;
+
+    /* 阈值滤波，抑制小电流时电源纹波导致的闪烁 */
+    if (vs < light.vcc_filter) {
+        vd = light.vcc_filter - vs;
+    } else {
+        vd = vs - light.vcc_filter;
+    }
+
+    if (vd >= LIGHT_VCC_FILTER_TH) {
+        light.vcc_filter = vs;
+    }
+
+    return light.vcc_filter;
+}
+
+static void light_track_level(void)
+{
+    u16 vcc = light_vcc_filter(hal_get_vcc());
+    light_duty_t duty = light_level2duty(vcc, light.cur_level);
+    hal_pwm_set_duty(duty);
+    light_update_power_level(vcc);
 }
 
 static void light_apply_level(u8 level)
 {
     u16 vcc = hal_get_vcc();
-    u8 duty = light_level2duty(vcc, light_level_gamma[level]);
+    light_duty_t duty = light_level2duty(vcc, level);
     hal_pwm_set_duty(duty);
     light_update_power_level(vcc);
+    light.vcc_filter = vcc;
+    light.vcc_s = vcc << LIGHT_VCC_FILTER_S;
     light.cur_level = level;
 }
 
 static u8 light_get_level_max(void)
 {
-#if CONFIG_LED_WIDE_EN
-    return (light.led == LED_FOCUS) ? CONFIG_FOCUS_LV_MAX : CONFIG_WIDE_LV_MAX;
-#else
-    return CONFIG_FOCUS_LV_MAX;
+    switch (light.led) {
+        case LED_FOCUS:
+            if (light.mode == LIGHT_FLASH) {
+                return CONFIG_FOCUS_FLASH_LV_MAX;
+            } else {
+                return CONFIG_FOCUS_LV_MAX;
+            }
+#if (CONFIG_LED_EN & CONFIG_LED_WIDE)
+        case LED_WIDE:
+            return CONFIG_WIDE_LV_MAX;
 #endif
+#if (CONFIG_LED_EN & CONFIG_LED_RED)
+        case LED_RED:
+            return CONFIG_RED_LV_MAX;
+#endif
+        default:
+            return 0;
+    }
 }
 
 static u8 light_get_level(void)
 {
-#if CONFIG_LED_WIDE_EN
+#if (CONFIG_LED_EN & CONFIG_LED_WIDE)
     return (light.led == LED_FOCUS) ? light.focus_level : light.wide_level;
 #else
     return light.focus_level;
@@ -170,7 +233,7 @@ static void light_set_level(u8 level)
             light_apply_level(level);
         }
     } else {
-#if CONFIG_LED_WIDE_EN
+#if (CONFIG_LED_EN & CONFIG_LED_WIDE)
         if (light.wide_level != level) {
             light.wide_level = level;
             light_apply_level(level);
@@ -333,6 +396,32 @@ static void light_lock_proc(key_event_e key)
     }
 }
 
+static void light_adjust_direction(void)
+{
+    /* 每次长按或者达到边界时切换亮度调整方向 */
+    u8 level = light_get_level();
+
+    if (level == light_get_level_max()) {
+        light.level_is_inc = 0;
+    } else if (level == LIGHT_LEVEL_MIN) {
+        light.level_is_inc = 1;
+    } else {
+        light.level_is_inc = !light.level_is_inc;
+    }
+}
+
+static void light_adjust_level(void)
+{
+    u8 level = light_get_level();
+
+    if (light.level_is_inc) {
+        level = (level < light_get_level_max()) ? level + 1 : level;
+    } else {
+        level = (level > LIGHT_LEVEL_MIN) ? level - 1 : level;
+    }
+    light_set_level(level);
+}
+
 static void light_on_proc(key_event_e key)
 {
     switch (key) {
@@ -340,7 +429,7 @@ static void light_on_proc(key_event_e key)
             light_set_mode(LIGHT_OFF);
             return;
         case KEY_EVENT_SHORT_2:
-#if CONFIG_LED_WIDE_EN
+#if (CONFIG_LED_EN & CONFIG_LED_WIDE)
             light.led = LED_WIDE;
             light_apply_level(light.wide_level);
             light_set_mode(LIGHT_ON);
@@ -350,30 +439,19 @@ static void light_on_proc(key_event_e key)
 #endif
             break;
         case KEY_EVENT_SHORT_3:
+#if (CONFIG_LED_EN & CONFIG_LED_RED)
+            if (light.led == LED_WIDE) {
+                light.led = LED_RED;
+            }
+#endif
             light_set_mode(LIGHT_FLASH);
             return;
-        case KEY_EVENT_LONG: {
-            /* 每次长按或者达到边界时切换亮度调整方向 */
-            u8 level = light_get_level();
-            if (level == light_get_level_max()) {
-                light.level_is_inc = 0;
-            } else if (level == LIGHT_LEVEL_MIN) {
-                light.level_is_inc = 1;
-            } else {
-                light.level_is_inc = !light.level_is_inc;
-            }
+        case KEY_EVENT_LONG:
+            light_adjust_direction();
             /* fall-through */
-        }
-        case KEY_EVENT_LONG_REPEAT: {
-            u8 level = light_get_level();
-            if (light.level_is_inc) {
-                level = (level < light_get_level_max()) ? level + 1 : level;
-            } else {
-                level = (level > LIGHT_LEVEL_MIN) ? level - 1 : level;
-            }
-            light_set_level(level);
+        case KEY_EVENT_LONG_REPEAT:
+            light_adjust_level();
             break;
-        }
         default:
             break;
     }
@@ -478,7 +556,7 @@ static void light_temp_protect(void)
 #if CONFIG_NTC_EN
     u8 temp;
 
-    if (light.mode != LIGHT_ON) {
+    if (light.mode != LIGHT_ON || light.led != LED_FOCUS) {
         light.temp_cnt = 0;
         return;
     }
@@ -491,10 +569,9 @@ static void light_temp_protect(void)
     light.temp_cnt = LIGHT_TEMP_CHECK_CNT;
     temp = ntc_get_temp();
     if (temp > CONFIG_TEMP_HIGH) {
-        u8 level = light_get_level();
-        if (level > light_get_level_max() / 2) {
-            level--;
-            light_set_level(level);
+        if (light.focus_level > CONFIG_FOCUS_LV_MAX / 2) {
+            light.focus_level--;
+            light_apply_level(light.focus_level);
         }
     }
 #endif
@@ -511,7 +588,7 @@ static void light_track_vcc(void)
         light.track_vcc_cnt--;
     } else {
         light.track_vcc_cnt = LIGHT_TRACK_VCC_CNT;
-        light_apply_level(light.cur_level);
+        light_track_level();
     }
 }
 

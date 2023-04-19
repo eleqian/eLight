@@ -14,21 +14,23 @@ extern volatile tick_t g_tick;
 typedef enum {
     LED_NONE,
     LED_FOCUS,
-#if CONFIG_LED_WIDE_EN
+#if (CONFIG_LED_EN & CONFIG_LED_WIDE)
     LED_WIDE,
-    LED_INDICATE = LED_WIDE,
-#else
-    LED_INDICATE = LED_FOCUS,
+#endif
+#if (CONFIG_LED_EN & CONFIG_LED_RED)
+    LED_RED,
 #endif
 
     LED_MAX
 } led_e;
 
+#define LED_INDICATE (LED_MAX - 1)
+
 typedef enum {
-#if CONFIG_BOARD_867A
+#if CONFIG_BOARD_TYPE == BOARD_TYPE_867A
     ADC_VLED = 0,
 #endif
-#if CONFIG_NTC_EN
+#if (CONFIG_BOARD_TYPE == BOARD_TYPE_SD1006) || (CONFIG_BOARD_TYPE == BOARD_TYPE_PRO)
     ADC_NTC = 4,
 #endif
     ADC_VCC = 15,
@@ -39,7 +41,7 @@ void hal_init(void);
 
 BOOL hal_key_pressed(void);
 void hal_led_en(led_e led);
-void hal_pwm_set_duty(u8 duty);
+void hal_pwm_set_duty(light_duty_t duty);
 
 void hal_adc_en(u8 en);
 u16 hal_adc_conv(adc_ch_e ch);

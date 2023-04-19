@@ -6,17 +6,26 @@
 #define WDT_TIME 0 /* ~197ms@4M */
 #define CHIP_VREF (*(u16 code *)0x1ff7) /* in mv */
 
-#if CONFIG_BOARD_867A
-#define PIN_LED_FOCUS P54
-#define PIN_LED_WIDE P55
-#define PIN_DRV_EN P31
-#elif CONFIG_BOARD_SD1006
-#define PIN_DRV_EN P55
+#define LED_ON 1
+#define LED_OFF 0
+
+#if CONFIG_BOARD_TYPE == BOARD_TYPE_867A
+#define SET_LED_FOCUS(on) P54 = (on)
+#define SET_LED_WIDE(on) P55 = (on)
+#define SET_DRV_EN(on) P31 = (on)
+#elif CONFIG_BOARD_TYPE == BOARD_TYPE_SD1006
+#define SET_LED_FOCUS(on) P55 = (on)
+#define SET_DRV_EN(on)
+#elif CONFIG_BOARD_TYPE == BOARD_TYPE_PRO
+#define SET_LED_FOCUS(on) P55 = (on)
+#define SET_LED_WIDE(on) P31 = (on)
+#define SET_LED_RED(on) do { P30 = !(on); SET_LED_WIDE(on); } while (0)
+#define SET_DRV_EN(on)
 #else
 #error Unsupported hardware!
 #endif
 
-#define PIN_KEY P32
+#define GET_KEY() (!P32)
 
 volatile tick_t g_tick;
 
@@ -35,7 +44,7 @@ void delay_ms(u8 ms)
     u16 i;
 
     do {
-        i = SYS_CLK_HZ / 10000;
+        i = SYS_CLK_HZ / 10000U;
         while (--i)
             ;
     } while (--ms);
@@ -43,7 +52,7 @@ void delay_ms(u8 ms)
 
 static void hal_gpio_init(void)
 {
-#if CONFIG_BOARD_867A
+#if CONFIG_BOARD_TYPE == BOARD_TYPE_867A
     /* P3.0: ADC IN; P3.1: OUT; P3.2: Bi-IO; P3.3: OUT */
     P3IE = 0xfe;
     P3M0 = 0x0a;
@@ -52,7 +61,11 @@ static void hal_gpio_init(void)
     /* P5.4: OUT; P5.5: OUT */
     P5M0 = 0x30;
     P5M1 = 0x00;
-#elif CONFIG_BOARD_SD1006
+
+    SET_DRV_EN(LED_OFF);
+    SET_LED_FOCUS(LED_OFF);
+    SET_LED_WIDE(LED_OFF);
+#elif CONFIG_BOARD_TYPE == BOARD_TYPE_SD1006
     /* P3.0~2: Bi-IO; P3.3: OUT */
     P3M0 = 0x08;
     P3M1 = 0x00;
@@ -61,13 +74,24 @@ static void hal_gpio_init(void)
     P5IE = 0xef;
     P5M0 = 0x20;
     P5M1 = 0x10;
-#endif
 
-#if CONFIG_LED_WIDE_EN
-    PIN_LED_FOCUS = 0;
-    PIN_LED_WIDE = 0;
+    SET_DRV_EN(LED_OFF);
+    SET_LED_FOCUS(LED_OFF);
+#elif CONFIG_BOARD_TYPE == BOARD_TYPE_PRO
+    /* P3.0: Bi-IO; P3.1: OUT; P3.2: Bi-IO; P3.3: OUT */
+    P3M0 = 0x0a;
+    P3M1 = 0x00;
+
+    /* P5.4: ADC IN; P5.5: OUT */
+    P5IE = 0xef;
+    P5M0 = 0x20;
+    P5M1 = 0x10;
+
+    SET_DRV_EN(LED_OFF);
+    SET_LED_FOCUS(LED_OFF);
+    SET_LED_WIDE(LED_OFF);
+    SET_LED_RED(LED_OFF);
 #endif
-    PIN_DRV_EN = 0;
 }
 
 static void hal_time_base_init(void)
@@ -82,7 +106,6 @@ static void hal_time_base_init(void)
 
 static void hal_pwm_init(void)
 {
-    /* 8位PWM */
     CCON = 0x00;
     CMOD = 0x08; // PCA时钟为系统时钟
     CL = 0x00;
@@ -90,7 +113,11 @@ static void hal_pwm_init(void)
 
     // PCA模块1
     CCAPM1 = 0x42; // PWM工作模式
+#ifdef CONFIG_DIM_HIGH_RES
+    PCA_PWM1 = 0xc0; // 10位PWM
+#else
     PCA_PWM1 = 0x00; // 8位PWM
+#endif
     CCAP1L = 0x00; // 占空比为100%
     CCAP1H = 0x00;
 
@@ -100,7 +127,7 @@ static void hal_pwm_init(void)
 static void hal_adc_init(void)
 {
     ADCTIM = 0x3f; // 设置ADC内部时序，单次转换总共45个时钟周期
-    ADCCFG = 0x21; // 设置ADC时钟为系统时钟/2/2=1M，结果右对齐
+    ADCCFG = 0x20 | (SYS_CLK_HZ / 2 / 1000000UL - 1); // 设置ADC时钟为1M，结果右对齐
     ADC_CONTR = 0x8f; // 使能ADC模块，并选择第15通道
 }
 
@@ -109,9 +136,9 @@ void hal_init(void)
     g_tick = 0;
 
     P_SW2 |= 0x80; /* 使能访问XFR */
-    hal_gpio_init();
     hal_time_base_init();
     hal_pwm_init();
+    hal_gpio_init();
     hal_adc_init();
 
     /* 使能INT0下降沿中断 */
@@ -125,39 +152,52 @@ void hal_init(void)
 
 BOOL hal_key_pressed(void)
 {
-    return !PIN_KEY;
+    return GET_KEY();
 }
 
 void hal_led_en(led_e led)
 {
+    SET_DRV_EN(LED_OFF);
+    SET_LED_FOCUS(LED_OFF);
+#if (CONFIG_LED_EN & CONFIG_LED_WIDE)
+    SET_LED_WIDE(LED_OFF);
+#endif
+#if (CONFIG_LED_EN & CONFIG_LED_RED)
+    SET_LED_RED(LED_OFF);
+#endif
+
     switch (led) {
         case LED_FOCUS:
-#if CONFIG_LED_WIDE_EN
-            PIN_LED_FOCUS = 1;
-            PIN_LED_WIDE = 0;
-#endif
-            PIN_DRV_EN = 1;
+            SET_LED_FOCUS(LED_ON);
+            SET_DRV_EN(LED_ON);
             break;
-#if CONFIG_LED_WIDE_EN
+#if (CONFIG_LED_EN & CONFIG_LED_WIDE)
         case LED_WIDE:
-            PIN_LED_WIDE = 1;
-            PIN_LED_FOCUS = 0;
-            PIN_DRV_EN = 1;
+            SET_LED_WIDE(LED_ON);
+            SET_DRV_EN(LED_ON);
+            break;
+#endif
+#if (CONFIG_LED_EN & CONFIG_LED_RED)
+        case LED_RED:
+            SET_LED_RED(LED_ON);
+            SET_DRV_EN(LED_ON);
             break;
 #endif
         default:
-            PIN_DRV_EN = 0;
-#if CONFIG_LED_WIDE_EN
-            PIN_LED_FOCUS = 0;
-            PIN_LED_WIDE = 0;
-#endif
             break;
     }
 }
 
-void hal_pwm_set_duty(u8 duty)
+void hal_pwm_set_duty(light_duty_t duty)
 {
-    CCAP1H = 255 - duty;
+#if CONFIG_DIM_HIGH_RES
+    u16 pwm_value = LIGHT_DUTY_MAX - 1 - duty;
+
+    PCA_PWM1 = (PCA_PWM1 & ~0x30) | (u8)((pwm_value & 0x0300) >> 4);
+    CCAP1H = (u8)pwm_value;
+#else
+    CCAP1H = LIGHT_DUTY_MAX - 1 - duty;
+#endif
 }
 
 void hal_adc_en(BOOL en)
@@ -215,7 +255,7 @@ void hal_enter_low_power(void)
     /* pwm固定输出低，避免外部电流功耗 */
     CCAP1H = 0xff;
     CCAP1L = 0xff;
-    PCA_PWM1 = 0x03;
+    PCA_PWM1 |= 0x3f;
     EX0 = 1; // 使能INT0中断
     PCON = 0x02; // MCU进入掉电模式
     _nop_();
@@ -226,7 +266,7 @@ void hal_enter_low_power(void)
     /* pwm固定输出高，最低亮度 */
     CCAP1H = 0x0;
     CCAP1L = 0x0;
-    PCA_PWM1 = 0x00;
+    PCA_PWM1 &= 0xc0;
     hal_adc_en(TRUE);
     delay_ms(1);
 }
