@@ -82,3 +82,8 @@
 - 更大功率无可用集成芯片，采用Buck芯片+电流采样反馈实现恒流；
     + Buck芯片使用MP2145，可达到10W功率（输出电流>3A），效率>95%；
     + 电流采样使用INA180，低成本高精度，减少采样电阻损耗。
+
+# 编译方法
+- 修改config.h中CONFIG_BOARD_TYPE宏为对应硬件（BOARD_TYPE_867A/BOARD_TYPE_SD1006/BOARD_TYPE_PRO）；
+- 使用MDK编译生成eLight.hex，使用STC-ISP软件烧写到单片机；
+- 对于BOARD_TYPE_PRO硬件类型，单片机时钟频率选择16MHz，其它类型选择4MHz。

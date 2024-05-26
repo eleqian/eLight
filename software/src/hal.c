@@ -113,7 +113,7 @@ static void hal_pwm_init(void)
 
     // PCA模块1
     CCAPM1 = 0x42; // PWM工作模式
-#ifdef CONFIG_DIM_HIGH_RES
+#if CONFIG_DIM_HIGH_RES
     PCA_PWM1 = 0xc0; // 10位PWM
 #else
     PCA_PWM1 = 0x00; // 8位PWM

@@ -41,7 +41,7 @@ typedef enum {
 static u16 ROM light_bat_cap[] = {368, 374, 377, 379, 382, 387, 392, 398, 406, 420};
 #define LIGHT_BAT_CAP_CNT (ARRAY_SIZE(light_bat_cap))
 
-#ifdef CONFIG_DIM_HIGH_RES
+#if CONFIG_DIM_HIGH_RES
 /* 2%~100%驱动电流 */
 static light_duty_t ROM light_level_gamma[] = {
     20, 23, 26, 29, 33, 37, 42, 47, 53, 60, 68, 77, 87, 99, 112, 126,
