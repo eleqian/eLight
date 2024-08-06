@@ -21,6 +21,10 @@
 #define SET_LED_WIDE(on) P31 = (on)
 #define SET_LED_RED(on) do { P30 = !(on); SET_LED_WIDE(on); } while (0)
 #define SET_DRV_EN(on)
+#elif CONFIG_BOARD_TYPE == BOARD_TYPE_CORE
+#define SET_LED_FOCUS(on) P31 = (on)
+#define SET_LED_WIDE(on) P30 = (on)
+#define SET_DRV_EN(on) P55 = (on)
 #else
 #error Unsupported hardware!
 #endif
@@ -91,6 +95,19 @@ static void hal_gpio_init(void)
     SET_LED_FOCUS(LED_OFF);
     SET_LED_WIDE(LED_OFF);
     SET_LED_RED(LED_OFF);
+#elif CONFIG_BOARD_TYPE == BOARD_TYPE_CORE
+    /* P3.0~P3.2: Bi-IO; P3.3: OUT */
+    P3M0 = 0x08;
+    P3M1 = 0x00;
+
+    /* P5.4: ADC IN; P5.5: OUT */
+    P5IE = 0xef;
+    P5M0 = 0x20;
+    P5M1 = 0x10;
+
+    SET_DRV_EN(LED_OFF);
+    SET_LED_FOCUS(LED_OFF);
+    SET_LED_WIDE(LED_OFF);
 #endif
 }
 
@@ -262,6 +279,8 @@ void hal_enter_low_power(void)
     _nop_();
     _nop_();
     _nop_();
+
+    /* 掉电模式下被唤醒，继续执行 */
     EX0 = 0; // 关闭INT0中断
     /* pwm固定输出高，最低亮度 */
     CCAP1H = 0x0;

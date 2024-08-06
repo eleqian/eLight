@@ -335,6 +335,7 @@ static void light_set_mode(light_mode_e mode)
             hal_led_en(light.led);
             break;
         case LIGHT_LOCK:
+            light.led = LED_INDICATE;
             light.wait_time = LIGHT_LOW_POWER_CNT;
             light_apply_level(LIGHT_LEVEL_MIN);
             hal_led_en(LED_NONE);
@@ -556,7 +557,7 @@ static void light_temp_protect(void)
 #if CONFIG_NTC_EN
     u8 temp;
 
-    if (light.mode != LIGHT_ON || light.led != LED_FOCUS) {
+    if (light.mode != LIGHT_ON) {
         light.temp_cnt = 0;
         return;
     }

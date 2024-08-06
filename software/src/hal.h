@@ -27,10 +27,7 @@ typedef enum {
 #define LED_INDICATE (LED_MAX - 1)
 
 typedef enum {
-#if CONFIG_BOARD_TYPE == BOARD_TYPE_867A
-    ADC_VLED = 0,
-#endif
-#if (CONFIG_BOARD_TYPE == BOARD_TYPE_SD1006) || (CONFIG_BOARD_TYPE == BOARD_TYPE_PRO)
+#if (CONFIG_NTC_EN != NTC_NONE)
     ADC_NTC = 4,
 #endif
     ADC_VCC = 15,
