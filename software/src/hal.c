@@ -4,7 +4,7 @@
 
 #define TIMER_INIT_TICK (65536UL - (SYS_CLK_HZ / TASK_HZ / 12))
 #define WDT_TIME 0 /* ~197ms@4M */
-#define CHIP_VREF (*(u16 code *)0x1ff7) /* in mv */
+#define CHIP_VREF 1190U  /* mV */
 
 #define LED_ON 1
 #define LED_OFF 0
@@ -21,7 +21,7 @@
 #define SET_LED_WIDE(on) P31 = (on)
 #define SET_LED_RED(on) do { P30 = !(on); SET_LED_WIDE(on); } while (0)
 #define SET_DRV_EN(on)
-#elif CONFIG_BOARD_TYPE == BOARD_TYPE_CORE
+#elif (CONFIG_BOARD_TYPE == BOARD_TYPE_CORE_1W) || (CONFIG_BOARD_TYPE == BOARD_TYPE_CORE_5W)
 #define SET_LED_FOCUS(on) P31 = (on)
 #define SET_LED_WIDE(on) P30 = (on)
 #define SET_DRV_EN(on) P55 = (on)
@@ -95,7 +95,7 @@ static void hal_gpio_init(void)
     SET_LED_FOCUS(LED_OFF);
     SET_LED_WIDE(LED_OFF);
     SET_LED_RED(LED_OFF);
-#elif CONFIG_BOARD_TYPE == BOARD_TYPE_CORE
+#elif (CONFIG_BOARD_TYPE == BOARD_TYPE_CORE_1W) || (CONFIG_BOARD_TYPE == BOARD_TYPE_CORE_5W)
     /* P3.0~P3.2: Bi-IO; P3.3: OUT */
     P3M0 = 0x08;
     P3M1 = 0x00;
@@ -135,8 +135,13 @@ static void hal_pwm_init(void)
 #else
     PCA_PWM1 = 0x00; // 8位PWM
 #endif
+#if CONFIG_DIM_LINEAR == 0
     CCAP1L = 0x00; // 占空比为100%
     CCAP1H = 0x00;
+#else
+    CCAP1H = 0xff;
+    CCAP1L = 0xff;
+#endif
 
     CR = 1; // 启动PCA计时器
 }
@@ -253,7 +258,7 @@ u16 hal_get_vcc(void)
     }
     val >>= 3;
 
-    return (u16)(((u32)CHIP_VREF << 10) / 10 / val);
+    return (u16)(((u32)CHIP_VREF << CONFIG_ADC_RES) / 10 / val);
 }
 
 void hal_enter_idle(void)
@@ -282,9 +287,11 @@ void hal_enter_low_power(void)
 
     /* 掉电模式下被唤醒，继续执行 */
     EX0 = 0; // 关闭INT0中断
+#if CONFIG_DIM_LINEAR == 0
     /* pwm固定输出高，最低亮度 */
     CCAP1H = 0x0;
     CCAP1L = 0x0;
+#endif
     PCA_PWM1 &= 0xc0;
     hal_adc_en(TRUE);
     delay_ms(1);

@@ -39,7 +39,7 @@ static u8 ntc_search_table(u16 adc_val)
         } else if (adc_val > val) {
             s_idx = idx;
         } else {
-            return idx;
+            return NTC_TABLE_T_FIRST + idx;
         }
     }
 

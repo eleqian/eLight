@@ -5,7 +5,7 @@
 
 /* unit: 10mv */
 #define LIGHT_VCC_FULL 420U /* 4.2v */
-#define LIGHT_VCC_LOW 330U /* 3.3v */
+#define LIGHT_VCC_LOW 320U /* 3.2v */
 #define LIGHT_VCC_EMPTY 290U /* 2.9v */
 #define LIGHT_VCC_LV_TH 10 /* 0.1v */
 #define LIGHT_VCC_FILTER_TH 2 /* 20mv */
@@ -18,7 +18,7 @@
 #define LIGHT_TRACK_VCC_CNT LIGHT_MS2CNT(200)
 #define LIGHT_LOW_POWER_CNT LIGHT_MS2CNT(2000)
 #define LIGHT_SHOW_POWER_CNT LIGHT_MS2CNT(1500)
-#define LIGHT_TEMP_CHECK_CNT LIGHT_MS2CNT(1000)
+#define LIGHT_TEMP_CHECK_CNT LIGHT_MS2CNT(2000)
 
 typedef enum {
     LIGHT_OFF,
@@ -41,7 +41,14 @@ typedef enum {
 static u16 ROM light_bat_cap[] = {368, 374, 377, 379, 382, 387, 392, 398, 406, 420};
 #define LIGHT_BAT_CAP_CNT (ARRAY_SIZE(light_bat_cap))
 
-#if CONFIG_DIM_HIGH_RES
+#if CONFIG_DIM_LINEAR
+/* 2%~100%驱动电流 */
+static light_duty_t ROM light_level_gamma[] = {
+    2, 4, 8, 12, 16, 22, 26, 30, 34, 38, 42, 46, 50, 54, 59, 64,
+    70, 75, 81, 88, 95, 103, 111, 120, 130, 140, 152, 164, 177, 192, 207, 224,
+    255
+};
+#elif CONFIG_DIM_HIGH_RES
 /* 2%~100%驱动电流 */
 static light_duty_t ROM light_level_gamma[] = {
     20, 23, 26, 29, 33, 37, 42, 47, 53, 60, 68, 77, 87, 99, 112, 126,
@@ -88,14 +95,24 @@ typedef struct {
 #endif
     u8 flash_freq;
     u8 sos_freq;
+
+    /* 电池电压测量 */
     u8 track_vcc_cnt;
     u16 vcc_filter;
     u16 vcc_s;
+
+    /* 当前亮度状态 */
     u8 cur_level;
+    light_duty_t cur_duty;
+    light_duty_t dst_duty;
+    light_duty_t duty_step;
+
+    /* 闪烁状态管理 */
     u8 pattern_index;
     u8 pattern_num;
     u8 pattern_scale;
     u8 ROM *pattern_tbl;
+
     u16 wait_time;
 } light_s;
 
@@ -106,23 +123,26 @@ void light_init(void)
 {
     memset(&light, 0, sizeof(light));
     TASK_SET_DELAY(light_tick, 0);
-    light.vcc_filter = LIGHT_VCC_LOW;
-    light.vcc_s = LIGHT_VCC_LOW << LIGHT_VCC_FILTER_S;
+    light.vcc_filter = LIGHT_VCC_FULL;
+    light.vcc_s = LIGHT_VCC_FULL << LIGHT_VCC_FILTER_S;
 }
 
 static void light_update_power_level(u16 vcc)
 {
     switch (light.power_level) {
         case POWER_NORMAL:
-            if (vcc < LIGHT_VCC_EMPTY) {
-                light.power_level = POWER_EMPTY;
-            } else if (vcc < LIGHT_VCC_LOW) {
+            if (vcc < LIGHT_VCC_LOW) {
                 light.power_level = POWER_LOW;
             }
             break;
         case POWER_LOW:
             if (vcc < LIGHT_VCC_EMPTY) {
-                light.power_level = POWER_EMPTY;
+                if (light.cur_level > 0) {
+                    /* 电量不足时自动降低亮度 */
+                    light.cur_level--;
+                } else {
+                    light.power_level = POWER_EMPTY;
+                }
             } else if (vcc > LIGHT_VCC_LOW + LIGHT_VCC_LV_TH) {
                 light.power_level = POWER_NORMAL;
             }
@@ -139,8 +159,13 @@ static void light_update_power_level(u16 vcc)
     }
 }
 
-static light_duty_t light_level2duty(u16 vcc, u8 level)
+static light_duty_t light_level2duty(u8 level)
 {
+#if CONFIG_DIM_LINEAR
+    /* 未根据vcc进行占空比修正，由于电流跟vcc是正比，变化范围有限 */
+    light_duty_t duty = light_level_gamma[level];
+#else
+    u16 vcc = light.vcc_filter;
     light_duty_t duty_org = light_level_gamma[level];
     light_duty_t duty = (LIGHT_VFB * LIGHT_DIM_DIV * LIGHT_DUTY_MAX -
         LIGHT_VFB * (LIGHT_DIM_DIV - 1) * duty_org + vcc / 2) / vcc;
@@ -148,11 +173,56 @@ static light_duty_t light_level2duty(u16 vcc, u8 level)
     if (duty > LIGHT_DUTY_MAX - 1) {
         duty = LIGHT_DUTY_MAX - 1;
     }
+#endif
 
     return duty;
 }
 
-static u16 light_vcc_filter(u16 vcc)
+/* 平滑PWM占空比变化，减少亮度调整阶梯感 */
+static void light_smooth_duty(void)
+{
+    if (light.cur_duty < light.dst_duty) {
+        if (light.cur_duty + light.duty_step > light.dst_duty) {
+            light.cur_duty = light.dst_duty;
+        } else {
+            light.cur_duty += light.duty_step;
+        }
+        hal_pwm_set_duty(light.cur_duty);
+    } else if (light.cur_duty > light.dst_duty) {
+        if (light.cur_duty < light.dst_duty + light.duty_step) {
+            light.cur_duty = light.dst_duty;
+        } else {
+            light.cur_duty -= light.duty_step;
+        }
+        hal_pwm_set_duty(light.cur_duty);
+    }
+}
+
+void light_set_duty(void)
+{
+    light_duty_t duty = light_level2duty(light.cur_level);
+    u8 step;
+
+    if (duty > light.cur_duty) {
+        step = (duty - light.cur_duty) / 5;
+    } else if (duty < light.cur_duty) {
+        step = (light.cur_duty - duty) / 5;
+    } else {
+        hal_pwm_set_duty(light.cur_duty);
+        return;
+    }
+
+    if (step == 0) {
+        step = 1;
+    }
+
+    light.dst_duty = duty;
+    light.duty_step = step;
+
+    light_smooth_duty();
+}
+
+static void light_vcc_filter(u16 vcc)
 {
     u16 vs;
     u16 vd;
@@ -171,27 +241,28 @@ static u16 light_vcc_filter(u16 vcc)
     if (vd >= LIGHT_VCC_FILTER_TH) {
         light.vcc_filter = vs;
     }
+}
 
-    return light.vcc_filter;
+static void light_init_power_level(void)
+{
+    u16 vcc = hal_get_vcc();
+    light.vcc_filter = vcc;
+    light.vcc_s = vcc << LIGHT_VCC_FILTER_S;
+    light_update_power_level(vcc);
 }
 
 static void light_track_level(void)
 {
-    u16 vcc = light_vcc_filter(hal_get_vcc());
-    light_duty_t duty = light_level2duty(vcc, light.cur_level);
-    hal_pwm_set_duty(duty);
-    light_update_power_level(vcc);
+    light_vcc_filter(hal_get_vcc());
+    light_set_duty();
+    light_update_power_level(light.vcc_filter);
 }
 
 static void light_apply_level(u8 level)
 {
-    u16 vcc = hal_get_vcc();
-    light_duty_t duty = light_level2duty(vcc, level);
-    hal_pwm_set_duty(duty);
-    light_update_power_level(vcc);
-    light.vcc_filter = vcc;
-    light.vcc_s = vcc << LIGHT_VCC_FILTER_S;
     light.cur_level = level;
+    light_set_duty();
+    light.track_vcc_cnt = 0;
 }
 
 static u8 light_get_level_max(void)
@@ -331,12 +402,14 @@ static void light_set_mode(light_mode_e mode)
         case LIGHT_BAT:
             light.led = LED_INDICATE;
             light.wait_time = light_vbat_time();
+            light.cur_duty = light_level2duty(LIGHT_LEVEL_MIN);
             light_apply_level(LIGHT_LEVEL_MIN);
             hal_led_en(light.led);
             break;
         case LIGHT_LOCK:
             light.led = LED_INDICATE;
             light.wait_time = LIGHT_LOW_POWER_CNT;
+            light.cur_duty = light_level2duty(LIGHT_LEVEL_MIN);
             light_apply_level(LIGHT_LEVEL_MIN);
             hal_led_en(LED_NONE);
             break;
@@ -352,6 +425,7 @@ static void light_off_proc(key_event_e key)
             light.led = LED_FOCUS;
             light_apply_level(light.focus_level);
             light_set_mode(LIGHT_ON);
+            light_init_power_level(); /* 从off到on时立即刷新电量状态，可能经过了充电 */
             return;
         case KEY_EVENT_SHORT_2:
             light.level_is_inc = TRUE;
@@ -570,9 +644,8 @@ static void light_temp_protect(void)
     light.temp_cnt = LIGHT_TEMP_CHECK_CNT;
     temp = ntc_get_temp();
     if (temp > CONFIG_TEMP_HIGH) {
-        if (light.focus_level > CONFIG_FOCUS_LV_MAX / 2) {
-            light.focus_level--;
-            light_apply_level(light.focus_level);
+        if (light.cur_level > light_get_level_max() * 3 / 4) {
+            light.cur_level--;
         }
     }
 #endif
@@ -600,6 +673,7 @@ void light_task(void)
     }
     TASK_SET_DELAY(light_tick, LIGHT_T_TASK);
 
+    light_smooth_duty();
     light_track_vcc();
     light_temp_protect();
     light_mode_proc();
